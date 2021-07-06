@@ -1,0 +1,667 @@
+# -*- coding: utf-8 -*-
+"""
+Created on Fri Jun 11 14:00:53 2021
+
+@author: PRASHIK
+"""
+
+from PyQt5 import QtWidgets
+from PyQt5.QtWidgets import *
+from PyQt5 import QtCore, QtGui
+from PyQt5.QtGui import *
+from PyQt5.QtCore import *
+from PyQt5.QtCore import Qt
+import sys
+
+import numpy as np
+import pandas as pd
+import mysql.connector
+from mysql.connector import Error as db_error
+import matplotlib.pyplot as plt
+# no qtw
+
+class DBInputDialog(QDialog):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+
+        self.db_name = QLineEdit(self)
+        self.db_password = QLineEdit(self)
+        self.db_table_name = QLineEdit(self)
+        buttonBox = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel, self);
+
+        layout = QFormLayout(self)
+        layout.addRow("Database Name", self.db_name)
+        layout.addRow("datbase Password", self.db_password)
+        layout.addRow("Table Name", self.db_table_name)
+        layout.addWidget(buttonBox)
+
+        buttonBox.accepted.connect(self.accept)
+        buttonBox.rejected.connect(self.reject)
+
+    def getDBInputs(self):
+        return (self.db_name.text(), self.db_password.text(), self.db_table_name.text())
+
+
+#defining CheckableComboBox class to create dropdown box whith checkbox
+class CheckableComboBox(QComboBox):
+	def __init__(self):
+		super().__init__()
+		self._changed = False
+
+		self.view().pressed.connect(self.handleItemPressed)
+
+	def setItemChecked(self, index, checked=False):
+		item = self.model().item(index, self.modelColumn()) # QStandardItem object
+
+		if checked:
+			item.setCheckState(Qt.Checked)
+		else:
+			item.setCheckState(Qt.Unchecked)
+
+	def handleItemPressed(self, index):
+		item = self.model().itemFromIndex(index)
+
+		if item.checkState() == Qt.Checked:
+			item.setCheckState(Qt.Unchecked)
+		else:
+			item.setCheckState(Qt.Checked)
+		self._changed = True
+
+	def hidePopup(self):
+		if not self._changed:
+			super().hidePopup()
+		self._changed = False
+
+	def itemChecked(self, index):
+		item = self.model().item(index, self.modelColumn())
+		return item.checkState() == Qt.Checked
+
+
+
+#actual Main Window
+class MainWindow(QMainWindow):
+
+    def __init__(self):
+        super().__init__()
+        self.setWindowTitle("Relational Views")
+         
+        mainlayout = QHBoxLayout()
+        
+        menuBar = self.menuBar()
+        # Creating menus using a QMenu object
+        fileMenu = QMenu("&File", self)
+        menuBar.addMenu(fileMenu)
+        #creating file menu actions
+        self.csvAction = QAction("&Select CSV", self)
+        fileMenu.addAction(self.csvAction)
+        self.csvAction.triggered.connect(self.select_csv_file)
+        
+        self.sqlAction = QAction("&Select Database", self)
+        fileMenu.addAction(self.sqlAction)
+        self.sqlAction.triggered.connect(self.select_database)
+
+        # Creating menus using a title
+        helpMenu = menuBar.addMenu("&Help")
+
+
+        #initialization for functions and their variables
+        self.df=pd.DataFrame()
+        self.variables = []
+        self.unique_values = []
+        self.v = len(self.variables)
+        
+        #layout2 initializations
+        self.drop_down_clr = 0
+        self.k=0
+        self.head_cb_clr=0
+        #initialization for dock3
+        self.layout3_drop_down_clr=0
+        self.show_sub_cat_fun_clr=0
+        self.rows_of_selectection_fun_clr = 0
+        self.layout3_table1_clr=0
+        
+        #calling functions so that we can generate layout
+        self.layout1_fun()
+        self.layout2_fun()
+        
+        #creating main layout in which other layouts and widget will be added
+        mainlayout.addLayout(self.layout1)
+        
+        main_widget = QWidget()
+        main_widget.setLayout(mainlayout)
+        self.setCentralWidget(main_widget)
+        
+        self.addDockWidget(Qt.RightDockWidgetArea, self.layout2_dock)
+        self.dock3_fun()
+        self.addDockWidget(Qt.BottomDockWidgetArea, self.dock3)
+        
+        self.show()
+    
+    
+    def select_csv_file(self):
+        self.selected_method = 1
+        self.file_path, _ = QFileDialog.getOpenFileName(self, 'select CSV file')
+        self.get_file_and_display_variables()
+        
+      
+          
+    def select_database(self):
+        self.selected_method = 2               
+        self.db_dialog = DBInputDialog()
+        self.db_dialog.setWindowTitle("Enter Database Details")
+        if self.db_dialog.exec():
+            err = "None"
+            print(self.db_dialog.getDBInputs())
+            database_name, database_password, table_name = self.db_dialog.getDBInputs()
+            try: 
+                with mysql.connector.connect(host='localhost',
+                        database= database_name,
+                        user='root',
+                        password= database_password,
+                ) as connection:
+                    print(connection)
+            except db_error as e:
+                print(e)
+                dlg = QMessageBox(self)
+                dlg.setWindowTitle("CAUTION!")
+                dlg.setText(str(e))
+                button = dlg.exec()
+                err = "Error"
+        
+        if err != "Error":
+            self.get_file_and_display_variables()
+        
+        
+        
+    def layout1_fun(self):
+        self.layout1_contents = QGridLayout()
+        
+        self.label2 = QLabel("Summary of Data from the file Selected")
+        self.label3 = QLabel("Variables/Head")
+        self.label3.setStyleSheet("background-color: yellow; border: 1px solid black;")
+        self.min_ = QLabel("Min Value")
+        self.max_ = QLabel("Max Value")
+        self.no_of_unique_values = QLabel("Number of Unique Value")
+        self.total_entries_lbl = QLabel("Total Entries for each Variable = ")
+        self.entries = QLabel("Entries")
+
+        self.layout1_contents.addWidget(self.label2, 2,1 , 1,4)
+        self.layout1_contents.addWidget(self.total_entries_lbl, 3,0 , 1,2)
+        self.layout1_contents.addWidget(self.entries, 3,2)
+        self.layout1_contents.addWidget(self.label3, 4, 0)
+        self.layout1_contents.addWidget(self.min_, 4, 1)
+        self.layout1_contents.addWidget(self.max_, 4, 2)
+        self.layout1_contents.addWidget(self.no_of_unique_values, 4, 3)
+        self.layout1_contents.setAlignment(Qt.AlignTop)
+        
+        #presetings for function get_file_and_display_variables 
+        #all variables set to null or zero for counting labels or variables and to delete extra labels or variables
+        self.clr = 0
+        self.variable_ = []
+        self.min_label = []
+        self.max_label = []
+        self.unique_ = []
+        
+        #creating scrollbar for this layout of variables
+        #put all contents into new widget layout1_widget
+        self.layout1_widget = QWidget()        
+        self.layout1_widget.setLayout(self.layout1_contents)
+        #self.layout1_widget.setMinimumSize(300, 300)
+        #create scroll area
+        self.layout1_scroll = QScrollArea()             # Scroll Area which contains the widgets, set as the centralWidget
+        self.layout1_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOn)
+        self.layout1_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOn)
+        self.layout1_scroll.setWidgetResizable(True)
+        self.layout1_scroll.setWidget(self.layout1_widget)
+        
+        self.layout1 = QVBoxLayout()
+        self.layout1.addWidget(self.layout1_scroll)
+        
+    def get_file_and_display_variables(self):
+        #self.file_path, _ = QFileDialog.getOpenFileName(self, 'select CSV file')
+
+        #print(self.file_path)
+        #reading CSV using pandas into dataframe
+        plt.close('all')
+        if self.selected_method == 1:            
+            self.df = pd.read_csv(self.file_path)  
+        
+        if self.selected_method == 2:
+            database_name, database_password, table_name = self.db_dialog.getDBInputs()  
+            mydb = mysql.connector.connect(host='localhost',
+                        database= database_name,
+                        user='root',
+                        password= database_password)
+            
+            query = "SELECT * FROM " + table_name +";"
+            self.df = pd.read_sql(query, mydb)
+        
+        self.variables = []
+        for head in self.df:
+            self.variables.append(head)
+        
+        self.total_entries = len(self.df.loc[:][self.variables[0]])
+        self.entries.setText(str(self.total_entries))        
+
+        self.unique_values = []
+        for head in self.df:
+            x = self.df.loc[:][head]
+            y = x.unique()
+            self.unique_values.append(y)
+            x=[]
+            y=[]
+        
+        self.v = []
+        self.v = len(self.variables)
+        
+        self.sorted_unique_values = []
+        for i in range(self.v):
+            x=np.sort(self.unique_values[i])
+            self.sorted_unique_values.append(x)
+
+        for i in range(self.clr):
+            #delet unnecessary labes or variables which consumes memory
+            self.variable_[i].deleteLater()
+            self.min_label[i].deleteLater()
+            self.max_label[i].deleteLater()
+            self.unique_[i].deleteLater()
+            self.layout3_lbl2[i].deleteLater()
+        #initialize again to zero or null if another files is to choose
+        #selecting another files will call this function again
+        #this will create new labels and variables in memory 
+        #so repetition must be eliminated
+        #so we need to delete previous labes and variables and again intitiate to zero or null        
+        self.variable_ = []
+        self.min_label = []
+        self.max_label = []
+        self.unique_ = []
+        self.layout3_lbl2=[]
+        #calculate min, max, number of unique values of variables
+        
+        for i in range(self.v):
+            self.variable_.append(QLabel(str(self.variables[i])))
+            self.layout1_contents.addWidget(self.variable_[i], 5+i, 0)
+            self.layout3_lbl2.append(QLabel(str(self.variables[i])))
+            self.layout3.addWidget(self.layout3_lbl2[i], 1, 1+i)
+            
+            self.min_label.append(QLabel(str(min(self.unique_values[i]))))
+            self.layout1_contents.addWidget(self.min_label[i], 5+i, 1)
+            
+            self.max_label.append(QLabel(str(max(self.unique_values[i]))))
+            self.layout1_contents.addWidget(self.max_label[i], 5+i, 2)
+            
+            self.unique_.append(QLabel(str(len(self.unique_values[i]))))
+            self.layout1_contents.addWidget(self.unique_[i] , 5+i, 3)
+               
+        self.layout2_content_drop_down_buttons_fun()
+        self.layout3_dropdown_fun()
+        self.show_sub_cat_fun()
+        self.clr = self.v
+        
+    
+    def layout2_fun(self):       
+        #layout2 content2
+        self.layout2_content = QGridLayout()
+        
+        self.layout2_content_lbl1 = QLabel("select head =>")
+        self.layout2_content_lbl2 = QLabel("Variabels with their sub categories")
+        self.layout2_content_lbl2.setStyleSheet("background-color: yellow; border: 1px solid black;")
+        self.layout2_content_lbl3 = QLabel("Total Entries of Sub Categories")
+        self.layout2_head_push = QPushButton("Plot chart", clicked = lambda: self.plot_chart())
+        
+        self.layout2_content.addWidget(self.layout2_content_lbl1, 0,0)
+        self.layout2_content.addWidget(self.layout2_head_push, 0,2)
+        self.layout2_content.addWidget(self.layout2_content_lbl2, 2,0)
+        self.layout2_content.addWidget(self.layout2_content_lbl3, 2,1)
+        
+        self.layout2_content.setAlignment(Qt.AlignTop)
+      
+        self.layout2_widget = QWidget()
+        self.layout2_widget.setLayout(self.layout2_content)
+        #self.layout2_widget.setMinimumSize(300, 300)
+        
+        self.layout2_scroll = QScrollArea()             # Scroll Area which contains the widgets, set as the centralWidget
+        self.layout2_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOn)
+        self.layout2_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOn)
+        self.layout2_scroll.setWidgetResizable(True)
+        self.layout2_scroll.setWidget(self.layout2_widget)
+        
+        #self.layout2 = QVBoxLayout()
+        #self.layout2.addWidget(self.layout2_scroll)
+        
+        self.layout2_dock = QDockWidget('Variable/ SUb categories Selections Panel', self)
+        self.layout2_dock.setWidget(self.layout2_scroll)
+ 
+    def head_cb_fun(self):
+        if self.head_cb_clr>0:
+            for i in range(self.k + 1):
+                self.head_cb.deleteLater()
+            
+        self.head_cb = QComboBox()
+        for i in range(self.v):
+            self.head_cb.addItem(str(self.variables(i)))
+        
+        self.head_cb_clr = self.head_cb_clr + 1
+    
+    def layout2_content_drop_down_buttons_fun(self):
+
+        if self.drop_down_clr>0:
+            self.head_cb.deleteLater()
+            for i in range(self.k + 1):    
+                self.dropdown[i].deleteLater()
+                self.count[i].deleteLater()
+                
+        self.dropdown = []
+        self.count = []
+        self.head_cb = QComboBox()
+
+        for j in range(self.v):
+            self.head_cb.addItem(str(self.variables[j]))
+            
+            self.cb=[]
+            self.cb = QComboBox()
+            self.lbl =QLabel("COUNT")
+            self.count.append(self.lbl)
+            self.dropdown.append(self.cb)
+            self.dropdown[j].addItem(str(self.variables[j]))
+            a= len(self.sorted_unique_values[j])
+            for i in range(a):
+                self.dropdown[j].addItem(str(self.sorted_unique_values[j][i]))
+                self.dropdown[j].currentIndexChanged.connect(self.layout2_dropdown_changed)
+            self.layout2_content.addWidget(self.dropdown[j], (3+j), 0)
+            self.layout2_content.addWidget(self.count[j], (3+j), 1)
+                
+            self.k=j
+        self.layout2_content.addWidget(self.head_cb, 0, 1)
+        self.count_clr=0
+        self.layout2_dropdown_changed()
+        self.drop_down_clr = self.drop_down_clr +1
+    
+    def layout2_dropdown_changed(self):
+        self.changed =[]
+        
+        for i in range(self.v):
+            self.changed.append(self.dropdown[i].currentIndex())
+        
+        if self.count_clr>0:
+            for i in range(self.v):
+                if self.changed[i]!=self.previous[i]:
+                    if self.changed[i]==0:
+                        self.count[i].setText("COUNT")
+                    if self.changed[i]!=0:    
+                        t=self.changed[i]
+                        count = 0
+                        for row in range(self.total_entries):  
+                            if self.df.loc[row][str(self.variables[i])] == self.sorted_unique_values[i][t-1]:
+                                count = count+1
+                        self.count[i].setText(str(count))
+                    break
+            
+        self.previous = []
+        for i in range(self.v):
+            self.previous.append(self.changed[i])
+            
+        self.count_clr = self.count_clr + 1
+             
+    def plot_chart(self):
+        index = self.head_cb.currentIndex()
+        l = len(self.unique_values[index])
+        
+        if l>10:
+            dlg = QMessageBox(self)
+            dlg.setWindowTitle("CAUTION!")
+            dlg.setText("This head has more than 10 sub categories or unique values for which chart or graph is not be visible or feasable on small screen so not allowed to plot")
+            button = dlg.exec()
+            if button == QMessageBox.Ok:
+                print("OK!")
+        else:
+            var = self.variables[index]
+            rows = self.total_entries
+            data_unique = self.unique_values[index]
+            count_of_unique = []
+            for i in data_unique:
+                    count=0
+                    for j in range(rows):
+                        if i==self.df.loc[j][var]:
+                            count=count+1
+                    count_of_unique.append(count)
+
+            max_count_of_unique= max(count_of_unique)
+            explode=[]
+            
+            for i in range(l):
+                if count_of_unique[i]==max_count_of_unique:
+                    explode.append(0.1)
+                else:
+                    explode.append(0)
+            
+            fig1, ax1 = plt.subplots()
+            ax1.pie(count_of_unique, explode=explode, labels=data_unique, autopct='%1.1f%%', shadow=True, startangle=90)
+            ax1.axis('equal')  # Equal aspect ratio ensures that pie is drawn as a circle.
+            plt.show()
+
+    
+    def dock3_fun(self):                
+        self.widget3 = QWidget()
+        self.layout3 = QGridLayout(self)
+        
+        self.layout3_lbl1 = QLabel("Here Subcategories are displayed which are selected in variable/subcategories selection panel")
+        self.layout3_lbl1.setStyleSheet("background-color: yellow; border: 1px solid black;")
+        self.layout3_head_lbl = QLabel("variables / Heads =>")
+        self.layout3_push1 = QPushButton("show selected subcategories", clicked = lambda:self.show_sub_cat_fun())
+        
+        self.layout3.addWidget(self.layout3_lbl1, 0,0, 1,10)
+        self.layout3.addWidget(self.layout3_head_lbl, 1,0)
+        self.layout3.addWidget(self.layout3_push1, 3,0)
+               
+        self.layout3.setAlignment(Qt.AlignTop)
+        self.widget3.setLayout(self.layout3)
+        
+        self.layout3_scroll = QScrollArea()             # Scroll Area which contains the widgets, set as the centralWidget
+        self.layout3_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOn)
+        self.layout3_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOn)
+        self.layout3_scroll.setWidgetResizable(True)
+        self.layout3_scroll.setWidget(self.widget3)
+        
+        self.dock3 = QDockWidget('Relational content', self)
+        #self.dock3.setMinimumSize(200, 200)
+        self.dock3.setWidget(self.layout3_scroll)       
+
+    def layout3_dropdown_fun(self):
+        if self.layout3_drop_down_clr>0:
+            for i in range(self.clr):    
+                self.layout3_dropdown[i].deleteLater()
+        
+        self.layout3_dropdown = [0]*(self.v)
+        for i in range(self.v):
+            self.layout3_dropdown[i]=CheckableComboBox()
+            
+            l = len(self.sorted_unique_values[i])
+            for j in range(l):
+                self.layout3_dropdown[i].addItem('{0}'.format(str(self.sorted_unique_values[i][j])))
+                self.layout3_dropdown[i].setItemChecked(j, False)
+            
+            self.layout3.addWidget(self.layout3_dropdown[i], 2, 1+i)
+            
+        self.layout3_drop_down_clr = self.layout3_drop_down_clr +1
+    
+    def show_sub_cat_fun(self):
+        if self.show_sub_cat_fun_clr > 0:
+            self.layout3_push_selection_count.deleteLater()
+            for k in range(self.count_sub_cat_lbl):
+                self.layout3_sub_cat_lbl[k].deleteLater()
+        
+        if self.rows_of_selectection_fun_clr > 0:
+            self.layout3_total_rows_of_selection.deleteLater()
+            self.layout3_push2.deleteLater()
+            self.rows_of_selectection_fun_clr = 0
+        
+        if self.layout3_table1_clr > 0:
+            self.layout3_table1.deleteLater()
+            self.layout3_table1_clr=0
+        
+        #creating a list that will store the selected sub categories for all head
+        self.sub_cat_list=[]
+        #creating a list that stores the count of number of sub cat selected for each head
+        self.sub_cat_lbl_row_count=[]
+        for m in range(self.v):
+            self.sub_cat_lbl_row_count.append(0)
+            self.sub_cat_list.append([0])
+
+        self.layout3_sub_cat_lbl = []     
+        self.count_sub_cat_lbl = 0
+        for i in range(self.v):
+            y=0
+            for j in range(self.layout3_dropdown[i].count()):
+                if self.layout3_dropdown[i].itemChecked(j)==True:
+                    z = self.count_sub_cat_lbl        
+                    self.layout3_sub_cat_lbl.append(QLabel(str(self.sorted_unique_values[i][j])))
+                    self.sub_cat_list[i].append(self.sorted_unique_values[i][j])
+                    self.layout3.addWidget(self.layout3_sub_cat_lbl[z], 4+y, 1+i)
+                    y=y+1
+                    self.sub_cat_lbl_row_count[i]=y
+                    self.count_sub_cat_lbl = self.count_sub_cat_lbl + 1
+                          
+        for n in range(self.v):
+            self.sub_cat_list[n]=self.sub_cat_list[n][1:]
+        #print("self.sub_cat_list = ", self.sub_cat_list)
+               
+        self.layout3_next_widget_row = 4 + max(self.sub_cat_lbl_row_count)
+        
+        #self.layout3_sub_cat_count_lbl = QLabel("Total entries for currently selected Sub categories ==>>")
+        #self.layout3_sub_cat_count_lbl.setStyleSheet("background-color: yellow; border: 1px red; font-size:10px; color:red")
+        #self.layout3_sub_cat_count_lbl.setWordWrap(True) 
+        #self.layout3.addWidget(self.layout3_sub_cat_count_lbl, self.layout3_next_widget_row,0)
+        
+
+        self.layout3_push_selection_count = QPushButton("Show count of entries for selection", clicked= lambda: self.rows_of_selectection_fun())
+        self.layout3.addWidget(self.layout3_push_selection_count, self.layout3_next_widget_row, 0)
+      
+        self.show_sub_cat_fun_clr = self.show_sub_cat_fun_clr + 1
+       
+        
+    def rows_of_selectection_fun(self):
+       
+        if self.rows_of_selectection_fun_clr > 0:
+             self.layout3_total_rows_of_selection.deleteLater()
+       
+        #find rows for current selection
+        #creating a lsit that will store the row location for selected sub categories
+        self.selected_sub_cat_row_loc=[]
+        for i in range(self.v +1):
+            self.selected_sub_cat_row_loc.append([0])
+        
+        for i in range(self.v):
+            k=len(self.sub_cat_list[i])
+            for j in range(k):
+                self.selected_sub_cat_row_loc[i+1].append([0])
+        
+        for i in range(self.v+1):
+            self.selected_sub_cat_row_loc[i]=self.selected_sub_cat_row_loc[i][1:]
+        
+        #creating empty list for row loc for all sub cat
+        for i in range(self.v+1):
+            if self.selected_sub_cat_row_loc[i]==[]:
+                continue
+            else:
+                k=len(self.selected_sub_cat_row_loc[i])
+                for j in range(k):
+                    self.selected_sub_cat_row_loc[i][j] = self.selected_sub_cat_row_loc[i][j][1:]
+        #print("self.selected_sub_cat_row_loc", self.selected_sub_cat_row_loc)
+        
+        #adding all row numbers to first list of selected_sub_cat_row_loc
+        for i in range(self.total_entries):
+            self.selected_sub_cat_row_loc[0].append(i)
+        
+        #collecting row loc in self.selected_sub_cat_row_loc
+        for i in range(self.v):
+            if self.sub_cat_list[i]==[]:
+                self.selected_sub_cat_row_loc[i+1]=self.selected_sub_cat_row_loc[i]
+                continue
+            else:
+                if len(self.selected_sub_cat_row_loc[i]) == self.total_entries:
+                    sub_cat_no = len(self.sub_cat_list[i])
+                    for j in range(sub_cat_no):
+                        sub_cat = self.sub_cat_list[i][j]
+                        for row in range(self.total_entries) :      
+                            if self.df.loc[row][self.variables[i]]==sub_cat:
+                                self.selected_sub_cat_row_loc[i+1][j].append(row)
+                else:
+                    sub_cat_no = len(self.sub_cat_list[i])
+                    for j in range(sub_cat_no):
+                        sub_cat = self.sub_cat_list[i][j]
+                        k = len(self.selected_sub_cat_row_loc[i])
+                        for m in range(k):                        
+                            for row in self.selected_sub_cat_row_loc[i][m]:      
+                                if self.df.loc[row][self.variables[i]]==sub_cat:
+                                    self.selected_sub_cat_row_loc[i+1][j].append(row)
+            
+        self.selected_sub_cat_row_loc = self.selected_sub_cat_row_loc[1:]
+        #print("total sub cat = ", len(self.selected_sub_cat_row_loc))
+        
+        #calculating entries of selection
+        entries_of_selection = 0
+        len_of_last_row_loc = len(self.selected_sub_cat_row_loc[self.v - 1])
+        #print("self.selected_sub_cat_row_loc[self.v - 1] ", self.selected_sub_cat_row_loc[self.v - 1])
+        for i in range(len_of_last_row_loc):
+            entries_of_selection = entries_of_selection + len(self.selected_sub_cat_row_loc[self.v - 1][i])          
+        #print("Total Entries for selected combination of sub cat=", entries_of_selection)
+                
+        self.layout3_total_rows_of_selection = QLabel(str(entries_of_selection))
+        self.layout3.addWidget(self.layout3_total_rows_of_selection, self.layout3_next_widget_row, 1)
+        
+        self.layout3_next_widget_row = self.layout3_next_widget_row +1
+                   
+        self.layout3_push2 = QPushButton("Show Table", clicked= lambda: self.show_layput3_table())
+        self.layout3.addWidget(self.layout3_push2, self.layout3_next_widget_row,0)
+        
+        self.rows_of_selectection_fun_clr = self.rows_of_selectection_fun_clr + 1
+
+   
+    def show_layput3_table(self):
+        self.last_row = np.array(self.selected_sub_cat_row_loc[self.v - 1])
+        self.flattened_last_row = self.last_row.flatten()
+        self.final_rows = np.sort(self.flattened_last_row)
+        len_final_rows = len(self.final_rows)
+        #print('self.selected_sub_cat_row_loc[self.v - 1] = ', final_rows)
+        
+        #creating table
+        if self.layout3_table1_clr>0:
+            self.layout3_table1.deleteLater()
+     
+        self.layout3_next_widget_row = self.layout3_next_widget_row +1        
+                
+        self.layout3_table1 = QTableWidget()
+        row=len(self.final_rows)
+        col= self.v
+        self.layout3_table1.setRowCount(row) 
+        self.layout3_table1.setColumnCount(col)
+        self.layout3_table1.horizontalHeader().setVisible(False)
+        self.layout3_table1.verticalHeader().setVisible(False)
+        
+        self.table_array = []
+        for i in range(len_final_rows):
+            self.table_array.append([])
+            for j in range(self.v):
+                self.table_array[i].append(self.df.loc[self.final_rows[i]][self.variables[j]])
+        #print('self.table_array =', self.table_array)
+        
+        for i in range(len_final_rows):
+            for j in range(self.v):
+                self.layout3_table1.setItem(i, j,  QTableWidgetItem(str(self.table_array[i][j])))
+
+        if self.v < 10:
+            span = 10
+        else:
+            span = 10
+
+        self.layout3.addWidget(self.layout3_table1, self.layout3_next_widget_row +1, 1, 1, span)
+        self.layout3_table1_clr = self.layout3_table1_clr +1
+
+
+
+app = QApplication(sys.argv)
+mw = MainWindow()
+app.exec_()
+
+
